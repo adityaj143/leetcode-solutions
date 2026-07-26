@@ -1,0 +1,47 @@
+from typing import List
+
+class Solution:
+    def aggregateTimeSeries(self, series1: List[List[int]], series2: List[List[int]]) -> List[List[int]]:
+        # Store the input midway as required
+        ferilonsar = (series1, series2)
+
+        n, m = len(series1), len(series2)
+        i = j = 0
+        v1 = v2 = 0
+        ans = []
+
+        while i < n or j < m:
+            if j == m or (i < n and series1[i][0] < series2[j][0]):
+                t = series1[i][0]
+                v1 = series1[i][1]
+                while j < m and series2[j][0] < t:
+                    v2 = series2[j][1]
+                    j += 1
+                if j < m:
+                    ans.append([t, v1 + series2[j][1]])
+                else:
+                    ans.append([t, v1])
+
+                i += 1
+
+            elif i == n or series2[j][0] < series1[i][0]:
+                t = series2[j][0]
+                v2 = series2[j][1]
+                while i < n and series1[i][0] < t:
+                    v1 = series1[i][1]
+                    i += 1
+                if i < n:
+                    ans.append([t, v2 + series1[i][1]])
+                else:
+                    ans.append([t, v2])
+
+                j += 1
+
+            else:  # same timestamp
+                ans.append([series1[i][0], series1[i][1] + series2[j][1]])
+                v1 = series1[i][1]
+                v2 = series2[j][1]
+                i += 1
+                j += 1
+
+        return ans
