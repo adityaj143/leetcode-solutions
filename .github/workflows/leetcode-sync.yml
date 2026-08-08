@@ -14,9 +14,7 @@ concurrency:
 
 jobs:
   sync:
-    name: Sync LeetCode submissions
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -107,7 +105,7 @@ jobs:
                   data = graphql(
                       q,
                       {
-                          "categorySlug": "",   # ✅ FIX: explicitly pass empty slug
+                          "categorySlug": "",
                           "limit": 100,
                           "skip": skip,
                           "filters": {"status": "AC"},
@@ -131,10 +129,10 @@ jobs:
               subs, offset, last_key = [], 0, None
               while True:
                   data = graphql(q, {"offset":offset,"limit":40,"lastKey":last_key,"questionSlug":slug}, "submissions")
-                  result = data["submissionList"]
-                  subs.extend([s for s in result["submissions"] if s["statusDisplay"].lower()=="accepted"])
-                  if not result["hasNext"]: break
-                  last_key, offset = result["lastKey"], offset+len(result["submissions"])
+                  result = data.get("submissionList") or {}
+                  subs.extend([s for s in result.get("submissions", []) if s.get("statusDisplay","").lower()=="accepted"])
+                  if not result.get("hasNext"): break
+                  last_key, offset = result.get("lastKey"), offset+len(result.get("submissions", []))
               return subs
 
           def get_submission_details(sub_id):
@@ -143,7 +141,8 @@ jobs:
                   code lang{name verboseName} question{questionFrontendId title titleSlug difficulty}
                   runtimeDisplay memoryDisplay
                 }}"""
-              return graphql(q, {"submissionId":int(sub_id)}, "submissionDetails")["submissionDetails"]
+              data = graphql(q, {"submissionId":int(sub_id)}, "submissionDetails")
+              return data.get("submissionDetails")
 
           EXT = {"python":"py","cpp":"cpp","java":"java","javascript":"js","c":"c","c#":"cs","go":"go","rust":"rs","kotlin":"kt","swift":"swift","ruby":"rb","php":"php","scala":"scala","dart":"dart","r":"r","bash":"sh","mysql":"sql"}
           def ext(lang): return "."+EXT.get(lang.lower(),"txt")
@@ -155,8 +154,8 @@ jobs:
               path.write_text(content, encoding="utf-8")
 
           def make_readme(d):
-              q = d["question"]; l = d["lang"]
-              return f"# {q['questionFrontendId']}. {q['title']}\n\n- **Difficulty:** {q['difficulty']}\n- **Language:** {l.get('verboseName') or l.get('name')}\n- **Runtime:** {d.get('runtimeDisplay','N/A')}\n- **Memory:** {d.get('memoryDisplay','N/A')}\n- **LeetCode:** https://leetcode.com/problems/{q['titleSlug']}/\n"
+              q = d["question"]; l = d.get("lang", {})
+              return f"# {q['questionFrontendId']}. {q['title']}\n\n- **Difficulty:** {q['difficulty']}\n- **Language:** {l.get('verboseName') or l.get('name','Unknown')}\n- **Runtime:** {d.get('runtimeDisplay','N/A')}\n- **Memory:** {d.get('memoryDisplay','N/A')}\n- **LeetCode:** https://leetcode.com/problems/{q['titleSlug']}/\n"
 
           def main():
               print("LeetCode FULL SYNC")
@@ -168,12 +167,24 @@ jobs:
                   subs = get_all_submissions(p["titleSlug"])
                   for s in subs:
                       d = get_submission_details(s["id"])
-                      lang = d["lang"]["name"]
+                      if not d:
+                          print("Skipped submission:", s["id"])
+                          continue
+                      lang = d.get("lang", {}).get("name", "text")
                       solution_file = folder / f"solution{ext(lang)}"
-                      write(solution_file, d["code"])
+                      write(solution_file, d.get("code",""))
                       readme_file = folder / "README.md"
-                      if not readme_file.exists(): write(readme_file, make_readme(d))
+                      if not readme_file.exists():
+                          write(readme_file, make_readme(d))
                       print("Saved:", solution_file)
+
+              # write synced problems badge JSON
+              count_file = ROOT / ".github" / "leetcode-count.json"
+              count_file.parent.mkdir(parents=True, exist_ok=True)
+              count_file.write_text(
+                  '{"schemaVersion":1,"label":"Synced Problems","message":"%d","color":"brightgreen"}' % len(problems),
+                  encoding="utf-8"
+              )
 
           if __name__=="__main__": main()
           PYTHON
