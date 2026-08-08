@@ -4,14 +4,8 @@
   <img src="https://leetcard.jacoblin.cool/adityaj143?theme=dark&font=Karma&ext=heatmap" alt="LeetCode Stats"/>
 </p>
 
-<p align="center">
-  <img src="https://img.shields.io/github/last-commit/adityaj143/leetcode-solutions?style=for-the-badge"/>
-  <img src="https://img.shields.io/github/repo-size/adityaj143/leetcode-solutions?style=for-the-badge"/>
-  <img src="https://img.shields.io/github/languages/top/adityaj143/leetcode-solutions?style=for-the-badge"/>
-</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.x-blue?style=for-the-badge&logo=python"/>
   <img src="https://img.shields.io/badge/LeetCode-DSA-orange?style=for-the-badge&logo=leetcode"/>
   <img src="https://img.shields.io/badge/GitHub_Actions-Automated-success?style=for-the-badge&logo=githubactions"/>
   <img src="https://img.shields.io/badge/Open_Source-Friendly-success?style=for-the-badge"/>
