@@ -1,0 +1,20 @@
+class Solution:
+    def licenseKeyFormatting(self, s: str, k: int) -> str:
+        result = []
+        count = 0
+
+        for char in reversed(s):
+            if char == '-':
+                continue
+
+            result.append(char.upper())
+            count += 1
+
+            if count == k:
+                result.append('-')
+                count = 0
+
+        if result and result[-1] == '-':
+            result.pop()
+
+        return ''.join(reversed(result))
