@@ -1,0 +1,31 @@
+class Solution:
+    def smallestGoodBase(self, n: str) -> str:
+        n = int(n)
+
+        # Maximum possible number of digits in base 2
+        max_digits = n.bit_length()
+
+        # Try larger digit counts first because they give smaller bases
+        for digits in range(max_digits, 1, -1):
+            # Approximate k = n^(1 / (digits - 1))
+            k = int(n ** (1 / (digits - 1)))
+
+            # Floating point can be slightly inaccurate,
+            # so check nearby values.
+            for base in range(max(2, k - 1), k + 2):
+                total = 1
+                power = 1
+
+                for _ in range(digits - 1):
+                    power *= base
+
+                    if total + power > n:
+                        break
+
+                    total += power
+
+                if total == n:
+                    return str(base)
+
+        # Always works: n = 11 in base (n - 1)
+        return str(n - 1)
