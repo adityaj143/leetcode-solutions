@@ -78,18 +78,49 @@ jobs:
               return data["userStatus"]["username"]
 
           def get_all_accepted_problems():
-              q = """query problemsetQuestionList($limit:Int,$skip:Int,$filters:QuestionListFilterInput){
-                problemsetQuestionList:questionList(limit:$limit,skip:$skip,filters:$filters){
-                  total:totalNum questions:data{questionFrontendId title titleSlug difficulty status}
-                }}"""
+              q = """
+              query problemsetQuestionList(
+                $categorySlug: String
+                $limit: Int
+                $skip: Int
+                $filters: QuestionListFilterInput
+              ) {
+                problemsetQuestionList: questionList(
+                  categorySlug: $categorySlug
+                  limit: $limit
+                  skip: $skip
+                  filters: $filters
+                ) {
+                  total: totalNum
+                  questions: data {
+                    questionFrontendId
+                    title
+                    titleSlug
+                    difficulty
+                    status
+                  }
+                }
+              }
+              """
               problems, skip = [], 0
               while True:
-                  data = graphql(q, {"limit":100,"skip":skip,"filters":{"status":"AC"}}, "problemsetQuestionList")
-                  qs = data["problemsetQuestionList"]["questions"]
+                  data = graphql(
+                      q,
+                      {
+                          "categorySlug": "",   # ✅ FIX: explicitly pass empty slug
+                          "limit": 100,
+                          "skip": skip,
+                          "filters": {"status": "AC"},
+                      },
+                      "problemsetQuestionList"
+                  )
+                  result = data.get("problemsetQuestionList") or {}
+                  qs = result.get("questions") or []
                   if not qs: break
                   problems.extend(qs)
                   skip += len(qs)
-                  if skip >= data["problemsetQuestionList"]["total"]: break
+                  total = result.get("total", 0)
+                  if skip >= total: break
               return problems
 
           def get_all_submissions(slug):
