@@ -1,3 +1,4 @@
+
 name: Sync LeetCode
 
 on:
@@ -149,6 +150,20 @@ jobs:
                           time.sleep(min(30, 2 ** attempt))
                           continue
 
+                      if response.status_code == 400:
+                          try:
+                              error_body = response.json()
+                              error_message = error_body.get(
+                                  "errors",
+                                  error_body
+                              )
+                          except Exception:
+                              error_message = response.text[:2000]
+
+                          raise RuntimeError(
+                              f"LeetCode HTTP 400: {error_message}"
+                          )
+
                       response.raise_for_status()
 
                       try:
@@ -243,7 +258,7 @@ jobs:
                 $skip: Int
                 $filters: QuestionListFilterInput
               ) {
-                problemsetQuestionList(
+                problemsetQuestionList: questionList(
                   categorySlug: $categorySlug
                   limit: $limit
                   skip: $skip
@@ -280,9 +295,7 @@ jobs:
                   )
 
                   result = (
-                      data.get(
-                          "problemsetQuestionList"
-                      )
+                      data.get("problemsetQuestionList")
                       or {}
                   )
 
@@ -387,16 +400,12 @@ jobs:
                   )
 
                   result = (
-                      data.get(
-                          "submissionList"
-                      )
+                      data.get("submissionList")
                       or {}
                   )
 
                   submissions = (
-                      result.get(
-                          "submissions"
-                      )
+                      result.get("submissions")
                       or []
                   )
 
