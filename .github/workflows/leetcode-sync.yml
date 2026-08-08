@@ -1,10 +1,9 @@
-
 name: Sync LeetCode
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # manual trigger (one-time full sync)
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/15 * * * *"   # auto-sync every 15 minutes
 
 permissions:
   contents: write
@@ -34,38 +33,14 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check "requests==2.32.4"
 
-      - name: Check LeetCode credentials
-        env:
-          LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
-          LEETCODE_CSRF_TOKEN: ${{ secrets.LEETCODE_CSRF_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -z "$LEETCODE_SESSION" ]; then
-            echo "::error::LEETCODE_SESSION secret is missing."
-            exit 1
-          fi
-
-          if [ -z "$LEETCODE_CSRF_TOKEN" ]; then
-            echo "::error::LEETCODE_CSRF_TOKEN secret is missing."
-            exit 1
-          fi
-
-          echo "LeetCode secrets are present."
-
       - name: Sync ALL LeetCode submissions
         env:
           LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
           CSRFTOKEN: ${{ secrets.LEETCODE_CSRF_TOKEN }}
           REPO_ROOT: ${{ github.workspace }}
-        shell: bash
         run: |
           python <<'PYTHON'
-          import os
-          import re
-          import sys
-          import time
+          import os, re, sys, time
           from pathlib import Path
           import requests
 
@@ -74,830 +49,110 @@ jobs:
           SESSION = os.environ.get("LEETCODE_SESSION", "").strip()
           CSRF = os.environ.get("CSRFTOKEN", "").strip()
 
-          TIMEOUT = 30
-          MAX_RETRIES = 5
-          PAGE_SIZE = 100
-          SUBMISSION_PAGE_SIZE = 40
-
-          if not SESSION:
-              print("ERROR: LEETCODE_SESSION is empty.")
-              sys.exit(1)
-
-          if not CSRF:
-              print("ERROR: CSRFTOKEN is empty.")
-              sys.exit(1)
+          if not SESSION or not CSRF:
+              sys.exit("Missing LeetCode secrets")
 
           session = requests.Session()
-
-          session.cookies.set(
-              "LEETCODE_SESSION",
-              SESSION,
-              domain=".leetcode.com"
-          )
-
-          session.cookies.set(
-              "csrftoken",
-              CSRF,
-              domain=".leetcode.com"
-          )
-
+          session.cookies.set("LEETCODE_SESSION", SESSION, domain=".leetcode.com")
+          session.cookies.set("csrftoken", CSRF, domain=".leetcode.com")
           session.headers.update({
-              "User-Agent": (
-                  "Mozilla/5.0 (X11; Linux x86_64) "
-                  "AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) "
-                  "Chrome/138.0 Safari/537.36"
-              ),
-              "Accept": "application/json",
+              "User-Agent": "Mozilla/5.0",
               "Content-Type": "application/json",
-              "Origin": "https://leetcode.com",
-              "Referer": "https://leetcode.com/",
               "x-csrftoken": CSRF,
           })
 
-          def graphql(query, variables=None, operation_name=None):
-              payload = {
-                  "query": query,
-                  "variables": variables or {},
-              }
-
-              if operation_name:
-                  payload["operationName"] = operation_name
-
-              last_error = None
-
-              for attempt in range(1, MAX_RETRIES + 1):
-                  try:
-                      response = session.post(
-                          GRAPHQL_URL,
-                          json=payload,
-                          timeout=TIMEOUT,
-                      )
-
-                      if response.status_code == 429:
-                          last_error = (
-                              "LeetCode rate limited the request "
-                              "(HTTP 429)."
-                          )
-                          time.sleep(min(60, 5 * attempt))
-                          continue
-
-                      if response.status_code >= 500:
-                          last_error = (
-                              f"LeetCode server error "
-                              f"(HTTP {response.status_code})."
-                          )
-                          time.sleep(min(30, 2 ** attempt))
-                          continue
-
-                      if response.status_code == 400:
-                          try:
-                              error_body = response.json()
-                              error_message = error_body.get(
-                                  "errors",
-                                  error_body
-                              )
-                          except Exception:
-                              error_message = response.text[:2000]
-
-                          raise RuntimeError(
-                              f"LeetCode HTTP 400: {error_message}"
-                          )
-
-                      response.raise_for_status()
-
-                      try:
-                          body = response.json()
-                      except Exception as exc:
-                          raise RuntimeError(
-                              "LeetCode returned a non-JSON response."
-                          ) from exc
-
-                      if body.get("errors"):
-                          messages = []
-
-                          for error in body["errors"]:
-                              messages.append(
-                                  str(
-                                      error.get(
-                                          "message",
-                                          "GraphQL error"
-                                      )
-                                  )
-                              )
-
-                          raise RuntimeError(
-                              "; ".join(messages)
-                          )
-
-                      if "data" not in body:
-                          raise RuntimeError(
-                              "LeetCode returned no GraphQL data."
-                          )
-
-                      return body["data"]
-
-                  except (
-                      requests.RequestException,
-                      RuntimeError
-                  ) as exc:
-                      last_error = exc
-
-                      if attempt == MAX_RETRIES:
-                          break
-
-                      time.sleep(
-                          min(
-                              30,
-                              2 ** (attempt - 1)
-                          )
-                      )
-
-              raise RuntimeError(
-                  f"LeetCode request failed after "
-                  f"{MAX_RETRIES} attempts: {last_error}"
-              )
+          def graphql(query, variables=None, op=None):
+              for attempt in range(5):
+                  r = session.post(GRAPHQL_URL, json={"query":query,"variables":variables or {},"operationName":op}, timeout=30)
+                  if r.status_code == 429: time.sleep(60); continue
+                  r.raise_for_status()
+                  body = r.json()
+                  if "errors" in body: raise RuntimeError(body["errors"])
+                  return body["data"]
+              raise RuntimeError("GraphQL failed")
 
           def get_current_user():
-              query = """
-              query globalData {
-                userStatus {
-                  isSignedIn
-                  username
-                }
-              }
-              """
-
-              data = graphql(
-                  query,
-                  operation_name="globalData"
-              )
-
-              status = data.get("userStatus") or {}
-
-              if not status.get("isSignedIn"):
-                  raise RuntimeError(
-                      "LeetCode rejected the session. "
-                      "Your LEETCODE_SESSION cookie may be expired."
-                  )
-
-              username = status.get("username")
-
-              if not username:
-                  raise RuntimeError(
-                      "Could not determine your LeetCode username."
-                  )
-
-              return username
+              q = "query globalData { userStatus { isSignedIn username } }"
+              data = graphql(q, op="globalData")
+              if not data["userStatus"]["isSignedIn"]: sys.exit("Session expired")
+              return data["userStatus"]["username"]
 
           def get_all_accepted_problems():
-              query = """
-              query problemsetQuestionList(
-                $categorySlug: String
-                $limit: Int
-                $skip: Int
-                $filters: QuestionListFilterInput
-              ) {
-                problemsetQuestionList: questionList(
-                  categorySlug: $categorySlug
-                  limit: $limit
-                  skip: $skip
-                  filters: $filters
-                ) {
-                  total: totalNum
-                  questions: data {
-                    questionFrontendId
-                    title
-                    titleSlug
-                    difficulty
-                    status
-                    isPaidOnly
-                  }
-                }
-              }
-              """
-
-              all_problems = []
-              skip = 0
-
+              q = """query problemsetQuestionList($limit:Int,$skip:Int,$filters:QuestionListFilterInput){
+                problemsetQuestionList:questionList(limit:$limit,skip:$skip,filters:$filters){
+                  total:totalNum questions:data{questionFrontendId title titleSlug difficulty status}
+                }}"""
+              problems, skip = [], 0
               while True:
-                  data = graphql(
-                      query,
-                      {
-                          "categorySlug": "",
-                          "limit": PAGE_SIZE,
-                          "skip": skip,
-                          "filters": {
-                              "status": "AC"
-                          },
-                      },
-                      "problemsetQuestionList"
-                  )
-
-                  result = (
-                      data.get("problemsetQuestionList")
-                      or {}
-                  )
-
-                  questions = (
-                      result.get("questions")
-                      or []
-                  )
-
-                  total = int(
-                      result.get("total")
-                      or 0
-                  )
-
-                  if not questions:
-                      break
-
-                  for question in questions:
-                      if question.get("status") == "AC":
-                          all_problems.append(question)
-
-                  skip += len(questions)
-
-                  print(
-                      f"Loaded solved problems: "
-                      f"{min(skip, total)}/{total}"
-                  )
-
-                  if total and skip >= total:
-                      break
-
-                  if len(questions) < PAGE_SIZE:
-                      break
-
-              unique = {}
-
-              for problem in all_problems:
-                  slug = problem.get("titleSlug")
-
-                  if slug:
-                      unique[slug] = problem
-
-              problems = list(unique.values())
-
-              def problem_number(problem):
-                  try:
-                      return int(
-                          problem.get(
-                              "questionFrontendId"
-                          )
-                          or 0
-                      )
-                  except Exception:
-                      return 0
-
-              problems.sort(
-                  key=problem_number
-              )
-
+                  data = graphql(q, {"limit":100,"skip":skip,"filters":{"status":"AC"}}, "problemsetQuestionList")
+                  qs = data["problemsetQuestionList"]["questions"]
+                  if not qs: break
+                  problems.extend(qs)
+                  skip += len(qs)
+                  if skip >= data["problemsetQuestionList"]["total"]: break
               return problems
 
-          def get_accepted_submission_for_problem(
-              question_slug
-          ):
-              query = """
-              query submissions(
-                $offset: Int!
-                $limit: Int!
-                $lastKey: String
-                $questionSlug: String!
-              ) {
-                submissionList(
-                  offset: $offset
-                  limit: $limit
-                  lastKey: $lastKey
-                  questionSlug: $questionSlug
-                ) {
-                  lastKey
-                  hasNext
-                  submissions {
-                    id
-                    statusDisplay
-                    lang
-                    timestamp
-                  }
-                }
-              }
-              """
-
-              offset = 0
-              last_key = None
-
+          def get_all_submissions(slug):
+              q = """query submissions($offset:Int!,$limit:Int!,$lastKey:String,$questionSlug:String!){
+                submissionList(offset:$offset,limit:$limit,lastKey:$lastKey,questionSlug:$questionSlug){
+                  lastKey hasNext submissions{id statusDisplay lang timestamp}
+                }}"""
+              subs, offset, last_key = [], 0, None
               while True:
-                  data = graphql(
-                      query,
-                      {
-                          "offset": offset,
-                          "limit": SUBMISSION_PAGE_SIZE,
-                          "lastKey": last_key,
-                          "questionSlug": question_slug,
-                      },
-                      "submissions"
-                  )
+                  data = graphql(q, {"offset":offset,"limit":40,"lastKey":last_key,"questionSlug":slug}, "submissions")
+                  result = data["submissionList"]
+                  subs.extend([s for s in result["submissions"] if s["statusDisplay"].lower()=="accepted"])
+                  if not result["hasNext"]: break
+                  last_key, offset = result["lastKey"], offset+len(result["submissions"])
+              return subs
 
-                  result = (
-                      data.get("submissionList")
-                      or {}
-                  )
+          def get_submission_details(sub_id):
+              q = """query submissionDetails($submissionId:Int!){
+                submissionDetails(submissionId:$submissionId){
+                  code lang{name verboseName} question{questionFrontendId title titleSlug difficulty}
+                  runtimeDisplay memoryDisplay
+                }}"""
+              return graphql(q, {"submissionId":int(sub_id)}, "submissionDetails")["submissionDetails"]
 
-                  submissions = (
-                      result.get("submissions")
-                      or []
-                  )
+          EXT = {"python":"py","cpp":"cpp","java":"java","javascript":"js","c":"c","c#":"cs","go":"go","rust":"rs","kotlin":"kt","swift":"swift","ruby":"rb","php":"php","scala":"scala","dart":"dart","r":"r","bash":"sh","mysql":"sql"}
+          def ext(lang): return "."+EXT.get(lang.lower(),"txt")
 
-                  for submission in submissions:
-                      status = (
-                          submission.get(
-                              "statusDisplay"
-                          )
-                          or ""
-                      ).strip().lower()
+          def slugify(v): return re.sub(r"[^a-z0-9]+","-",v.lower()).strip("-")
 
-                      if status == "accepted":
-                          return submission
+          def write(path, content):
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_text(content, encoding="utf-8")
 
-                  has_next = bool(
-                      result.get("hasNext")
-                  )
-
-                  if not has_next:
-                      break
-
-                  next_last_key = result.get(
-                      "lastKey"
-                  )
-
-                  if next_last_key:
-                      last_key = next_last_key
-
-                  offset += len(submissions)
-
-                  if not submissions:
-                      break
-
-              return None
-
-          def get_submission_details(submission_id):
-              query = """
-              query submissionDetails(
-                $submissionId: Int!
-              ) {
-                submissionDetails(
-                  submissionId: $submissionId
-                ) {
-                  code
-                  timestamp
-                  statusCode
-                  lang {
-                    name
-                    verboseName
-                  }
-                  question {
-                    questionFrontendId
-                    title
-                    titleSlug
-                    difficulty
-                  }
-                  runtimeDisplay
-                  memoryDisplay
-                }
-              }
-              """
-
-              data = graphql(
-                  query,
-                  {
-                      "submissionId": int(
-                          submission_id
-                      )
-                  },
-                  "submissionDetails"
-              )
-
-              return data.get(
-                  "submissionDetails"
-              )
-
-          def slugify(value):
-              value = value or ""
-
-              value = re.sub(
-                  r"[^a-zA-Z0-9\s-]",
-                  "",
-                  value
-              )
-
-              value = re.sub(
-                  r"[\s_]+",
-                  "-",
-                  value.strip()
-              )
-
-              value = re.sub(
-                  r"-+",
-                  "-",
-                  value
-              )
-
-              return value.lower().strip("-")
-
-          def get_problem_folder(details):
-              question = (
-                  details.get("question")
-                  or {}
-              )
-
-              number = str(
-                  question.get(
-                      "questionFrontendId",
-                      ""
-                  )
-              ).strip()
-
-              title = question.get(
-                  "title",
-                  ""
-              )
-
-              if not number.isdigit():
-                  raise RuntimeError(
-                      "Problem number was not returned by LeetCode."
-                  )
-
-              slug = slugify(title)
-
-              if not slug:
-                  slug = "unknown-problem"
-
-              return ROOT / (
-                  f"{int(number):04d}-{slug}"
-              )
-
-          EXTENSIONS = {
-              "c": ".c",
-              "c++": ".cpp",
-              "cpp": ".cpp",
-              "c#": ".cs",
-              "csharp": ".cs",
-              "java": ".java",
-              "python": ".py",
-              "python3": ".py",
-              "javascript": ".js",
-              "typescript": ".ts",
-              "go": ".go",
-              "golang": ".go",
-              "rust": ".rs",
-              "kotlin": ".kt",
-              "swift": ".swift",
-              "ruby": ".rb",
-              "php": ".php",
-              "scala": ".scala",
-              "dart": ".dart",
-              "r": ".r",
-              "bash": ".sh",
-              "shell": ".sh",
-              "mysql": ".sql",
-              "mssql": ".sql",
-              "postgresql": ".sql",
-              "oracle": ".sql",
-              "sqlite": ".sql",
-          }
-
-          def get_extension(language):
-              language = (
-                  language or "text"
-              ).strip().lower()
-
-              return EXTENSIONS.get(
-                  language,
-                  ".txt"
-              )
-
-          def write_if_changed(path, content):
-              path.parent.mkdir(
-                  parents=True,
-                  exist_ok=True
-              )
-
-              old_content = None
-
-              if path.exists():
-                  old_content = path.read_text(
-                      encoding="utf-8"
-                  )
-
-              if old_content == content:
-                  return False
-
-              path.write_text(
-                  content,
-                  encoding="utf-8"
-              )
-
-              return True
-
-          def make_readme(details):
-              question = (
-                  details.get("question")
-                  or {}
-              )
-
-              language = (
-                  details.get("lang")
-                  or {}
-              )
-
-              number = question.get(
-                  "questionFrontendId",
-                  ""
-              )
-
-              title = question.get(
-                  "title",
-                  "Unknown Problem"
-              )
-
-              difficulty = question.get(
-                  "difficulty",
-                  "Unknown"
-              )
-
-              language_name = (
-                  language.get("verboseName")
-                  or language.get("name")
-                  or "Unknown"
-              )
-
-              runtime = (
-                  details.get(
-                      "runtimeDisplay"
-                  )
-                  or "N/A"
-              )
-
-              memory = (
-                  details.get(
-                      "memoryDisplay"
-                  )
-                  or "N/A"
-              )
-
-              slug = question.get(
-                  "titleSlug",
-                  ""
-              )
-
-              link = (
-                  f"https://leetcode.com/problems/"
-                  f"{slug}/"
-              )
-
-              return (
-                  f"# {number}. {title}\n\n"
-                  f"- **Difficulty:** {difficulty}\n"
-                  f"- **Language:** {language_name}\n"
-                  f"- **Runtime:** {runtime}\n"
-                  f"- **Memory:** {memory}\n"
-                  f"- **LeetCode:** {link}\n"
-              )
+          def make_readme(d):
+              q = d["question"]; l = d["lang"]
+              return f"# {q['questionFrontendId']}. {q['title']}\n\n- **Difficulty:** {q['difficulty']}\n- **Language:** {l.get('verboseName') or l.get('name')}\n- **Runtime:** {d.get('runtimeDisplay','N/A')}\n- **Memory:** {d.get('memoryDisplay','N/A')}\n- **LeetCode:** https://leetcode.com/problems/{q['titleSlug']}/\n"
 
           def main():
-              print("LeetCode GitHub FULL SYNC")
+              print("LeetCode FULL SYNC")
+              print("User:", get_current_user())
+              problems = get_all_accepted_problems()
+              print("Problems:", len(problems))
+              for p in problems:
+                  folder = ROOT / f"{int(p['questionFrontendId']):04d}-{slugify(p['title'])}"
+                  subs = get_all_submissions(p["titleSlug"])
+                  for s in subs:
+                      d = get_submission_details(s["id"])
+                      lang = d["lang"]["name"]
+                      solution_file = folder / f"solution{ext(lang)}"
+                      write(solution_file, d["code"])
+                      readme_file = folder / "README.md"
+                      if not readme_file.exists(): write(readme_file, make_readme(d))
+                      print("Saved:", solution_file)
 
-              username = get_current_user()
-
-              print(
-                  f"Authenticated as: {username}"
-              )
-
-              problems = (
-                  get_all_accepted_problems()
-              )
-
-              print(
-                  f"Found {len(problems)} "
-                  f"solved problems."
-              )
-
-              if not problems:
-                  print(
-                      "No solved problems were found."
-                  )
-                  return
-
-              changed = 0
-              successful = 0
-              failed = 0
-
-              for index, problem in enumerate(
-                  problems,
-                  start=1
-              ):
-                  title = problem.get(
-                      "title",
-                      "Unknown Problem"
-                  )
-
-                  slug = problem.get(
-                      "titleSlug"
-                  )
-
-                  number = problem.get(
-                      "questionFrontendId",
-                      "?"
-                  )
-
-                  print(
-                      f"[{index}/{len(problems)}] "
-                      f"{number}. {title}"
-                  )
-
-                  if not slug:
-                      print(
-                          "WARNING: Missing titleSlug."
-                      )
-                      failed += 1
-                      continue
-
-                  try:
-                      submission = (
-                          get_accepted_submission_for_problem(
-                              slug
-                          )
-                      )
-
-                      if not submission:
-                          print(
-                              "WARNING: No accepted "
-                              "submission found."
-                          )
-                          failed += 1
-                          continue
-
-                      submission_id = str(
-                          submission.get("id")
-                          or ""
-                      )
-
-                      if not submission_id:
-                          print(
-                              "WARNING: Missing "
-                              "submission ID."
-                          )
-                          failed += 1
-                          continue
-
-                      print(
-                          f"Submission: "
-                          f"{submission_id}"
-                      )
-
-                      details = (
-                          get_submission_details(
-                              submission_id
-                          )
-                      )
-
-                      if not details:
-                          print(
-                              "WARNING: Submission "
-                              "details unavailable."
-                          )
-                          failed += 1
-                          continue
-
-                      code = details.get("code")
-
-                      if not code:
-                          print(
-                              "WARNING: Submission "
-                              "code unavailable."
-                          )
-                          failed += 1
-                          continue
-
-                      folder = (
-                          get_problem_folder(
-                              details
-                          )
-                      )
-
-                      language = (
-                          details.get("lang")
-                          or {}
-                      )
-
-                      language_name = (
-                          language.get(
-                              "verboseName"
-                          )
-                          or language.get(
-                              "name"
-                          )
-                          or "text"
-                      )
-
-                      extension = get_extension(
-                          language_name
-                      )
-
-                      solution_file = (
-                          folder
-                          / f"solution{extension}"
-                      )
-
-                      if write_if_changed(
-                          solution_file,
-                          code
-                      ):
-                          changed += 1
-
-                          print(
-                              f"UPDATED: "
-                              f"{solution_file.relative_to(ROOT)}"
-                          )
-                      else:
-                          print(
-                              "Solution unchanged."
-                          )
-
-                      readme_file = (
-                          folder
-                          / "README.md"
-                      )
-
-                      if not readme_file.exists():
-                          if write_if_changed(
-                              readme_file,
-                              make_readme(details)
-                          ):
-                              changed += 1
-
-                              print(
-                                  f"CREATED: "
-                                  f"{readme_file.relative_to(ROOT)}"
-                              )
-
-                      successful += 1
-
-                  except Exception as exc:
-                      failed += 1
-
-                      print(
-                          f"WARNING: Could not process "
-                          f"{slug}: {exc}"
-                      )
-
-              print(
-                  f"Problems found: {len(problems)}"
-              )
-
-              print(
-                  f"Successfully processed: "
-                  f"{successful}"
-              )
-
-              print(
-                  f"Failed/skipped: {failed}"
-              )
-
-              print(
-                  f"Changed files: {changed}"
-              )
-
-          if __name__ == "__main__":
-              try:
-                  main()
-              except KeyboardInterrupt:
-                  print("Sync cancelled.")
-                  sys.exit(1)
-              except Exception as exc:
-                  print(f"ERROR: {exc}")
-                  sys.exit(1)
-
+          if __name__=="__main__": main()
           PYTHON
 
       - name: Commit and push changes
-        shell: bash
         run: |
-          set -euo pipefail
-
           git config user.name "adityaj143"
           git config user.email "adityaj143@users.noreply.github.com"
-
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "No new LeetCode solutions."
-            exit 0
-          fi
-
+          if [ -z "$(git status --porcelain)" ]; then echo "No changes"; exit 0; fi
           git add -A
-
           git commit -m "[LeetCode Sync] Update submissions"
-
           git pull --rebase origin "${GITHUB_REF_NAME}"
-
           git push origin "HEAD:${GITHUB_REF_NAME}"
