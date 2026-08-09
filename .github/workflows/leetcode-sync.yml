@@ -1,1 +1,290 @@
-khfuhdsfu
+name: Sync LeetCode
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: leetcode-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Sync LeetCode solutions
+        env:
+          LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import requests
+          from pathlib import Path
+
+          SESSION = os.environ["LEETCODE_SESSION"]
+
+          GRAPHQL_URL = "https://leetcode.com/graphql"
+
+          headers = {
+              "User-Agent": "Mozilla/5.0",
+              "Content-Type": "application/json",
+              "Referer": "https://leetcode.com/",
+          }
+
+          cookies = {
+              "LEETCODE_SESSION": SESSION
+          }
+
+          session = requests.Session()
+          session.headers.update(headers)
+          session.cookies.update(cookies)
+
+          # ---------------------------------------------------------
+          # 1. Get current username
+          # ---------------------------------------------------------
+
+          query = """
+          query globalData {
+            userStatus {
+              username
+            }
+          }
+          """
+
+          response = session.post(
+              GRAPHQL_URL,
+              json={"query": query},
+              timeout=30
+          )
+
+          response.raise_for_status()
+
+          data = response.json()
+
+          username = (
+              data.get("data", {})
+                  .get("userStatus", {})
+                  .get("username")
+          )
+
+          if not username:
+              raise RuntimeError(
+                  "Could not authenticate with LeetCode. "
+                  "Check your LEETCODE_SESSION secret."
+              )
+
+          print(f"Authenticated as: {username}")
+
+          # ---------------------------------------------------------
+          # 2. Get accepted submissions
+          # ---------------------------------------------------------
+
+          submissions_query = """
+          query recentAcSubmissions($username: String!, $limit: Int!) {
+            recentAcSubmissionList(
+              username: $username
+              limit: $limit
+            ) {
+              id
+              title
+              titleSlug
+              timestamp
+              lang
+              code
+            }
+          }
+          """
+
+          # LeetCode's recentAcSubmissionList is limited.
+          # We request a large page so the first run can import
+          # as many historical accepted submissions as LeetCode
+          # exposes through this endpoint.
+          variables = {
+              "username": username,
+              "limit": 1000
+          }
+
+          response = session.post(
+              GRAPHQL_URL,
+              json={
+                  "query": submissions_query,
+                  "variables": variables
+              },
+              timeout=60
+          )
+
+          response.raise_for_status()
+
+          result = response.json()
+
+          submissions = (
+              result.get("data", {})
+                    .get("recentAcSubmissionList", [])
+          )
+
+          if not submissions:
+              print("No accepted submissions found.")
+              raise SystemExit(0)
+
+          print(f"Accepted submissions returned: {len(submissions)}")
+
+          # ---------------------------------------------------------
+          # 3. Language → extension
+          # ---------------------------------------------------------
+
+          extensions = {
+              "python": "py",
+              "python3": "py",
+
+              "cpp": "cpp",
+              "c++": "cpp",
+
+              "java": "java",
+
+              "javascript": "js",
+              "typescript": "ts",
+
+              "c": "c",
+
+              "csharp": "cs",
+              "c#": "cs",
+
+              "kotlin": "kt",
+
+              "swift": "swift",
+
+              "golang": "go",
+              "go": "go",
+
+              "rust": "rs",
+
+              "ruby": "rb",
+
+              "scala": "scala",
+
+              "php": "php",
+
+              "dart": "dart",
+
+              "racket": "rkt",
+
+              "erlang": "erl",
+
+              "elixir": "ex",
+
+              "sql": "sql",
+
+              "mysql": "sql",
+
+              "mssql": "sql",
+
+              "oracle": "sql",
+          }
+
+          # ---------------------------------------------------------
+          # 4. Safe folder names
+          # ---------------------------------------------------------
+
+          def safe_name(value):
+              value = value.lower().strip()
+
+              value = re.sub(
+                  r"[^a-z0-9]+",
+                  "-",
+                  value
+              )
+
+              value = value.strip("-")
+
+              return value
+
+          # ---------------------------------------------------------
+          # 5. Write solutions
+          # ---------------------------------------------------------
+
+          changed = 0
+
+          for submission in submissions:
+
+              title = submission.get("title")
+              slug = submission.get("titleSlug")
+              code = submission.get("code")
+              language = submission.get("lang")
+
+              if not title or not slug or not code:
+                  continue
+
+              extension = extensions.get(
+                  language.lower(),
+                  language.lower()
+              )
+
+              folder = Path(
+                  f"{safe_name(slug)}"
+              )
+
+              folder.mkdir(
+                  parents=True,
+                  exist_ok=True
+              )
+
+              solution_file = folder / f"solution.{extension}"
+
+              # Do not overwrite an existing solution.
+              #
+              # This prevents GitHub from constantly changing
+              # your files if LeetCode returns the same submission.
+              if solution_file.exists():
+                  continue
+
+              solution_file.write_text(
+                  code,
+                  encoding="utf-8"
+              )
+
+              print(
+                  f"Added: {solution_file}"
+              )
+
+              changed += 1
+
+          print(
+              f"New solution files added: {changed}"
+          )
+
+          PY
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .
+
+          if git diff --cached --quiet; then
+            echo "No new solutions to commit."
+            exit 0
+          fi
+
+          git commit -m "Sync LeetCode solutions"
+          git push
